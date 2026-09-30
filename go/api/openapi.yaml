@@ -1,0 +1,4646 @@
+openapi: 3.1.0
+info:
+  description: |
+    Cross-database SQL federation engine: River federation, Warden instance orchestration, query files, notebooks, the filestore (bucket volumes mounted at /home/river/rfs inside notebook runtimes) and the Lily AI. Source of truth for route shapes is `src/api.rs` — this spec tracks it, schemas are indicative. Auth: a `Bearer <jwt>` from /auth/register|login|refresh, an `x-api-key` `rqk_…` key issued post-login, or an operator-configured static key (bootstrap org). Public (no auth): `/v1/health`, `/`, `/v1/ai/status`, `/v1/auth/login|register|refresh`. Everything else is 401 fail-closed and RBAC-gated (`module:resource:action` permissions per org role).
+  title: River REST API
+  version: 0.9.0
+servers:
+- url: https://api.warden.ke/v1
+security:
+- bearerAuth: []
+- ApiKeyAuth: []
+paths:
+  /health:
+    get:
+      responses:
+        "200":
+          description: service health
+      security: []
+  /connections:
+    get:
+      responses:
+        "200":
+          description: list with health status
+    post:
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/_connections_post_request"
+        required: true
+      responses:
+        "201":
+          description: created + test_result
+        "400":
+          description: validation error
+  /connections/{alias}:
+    delete:
+      parameters:
+      - explode: false
+        in: path
+        name: alias
+        required: true
+        schema:
+          type: string
+        style: simple
+      responses:
+        "200":
+          description: removed
+  /connections/{alias}/test:
+    post:
+      parameters:
+      - explode: false
+        in: path
+        name: alias
+        required: true
+        schema:
+          type: string
+        style: simple
+      responses:
+        "200":
+          description: health result
+        "502":
+          description: unreachable
+  /connections/{alias}/introspect:
+    post:
+      parameters:
+      - explode: false
+        in: path
+        name: alias
+        required: true
+        schema:
+          type: string
+        style: simple
+      responses:
+        "200":
+          description: refreshed schema
+  /schema/{alias}:
+    get:
+      parameters:
+      - explode: false
+        in: path
+        name: alias
+        required: true
+        schema:
+          type: string
+        style: simple
+      responses:
+        "200":
+          description: cached schema (auto-introspects if stale)
+  /query:
+    post:
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/_query_post_request"
+      responses:
+        "200":
+          description: results
+  /query/explain:
+    post:
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/_query_explain_post_request"
+      responses:
+        "200":
+          description: logical plan + native sub-queries (+ AI walkthrough)
+  /query/history:
+    get:
+      responses:
+        "200":
+          description: recent structured query records
+  /tables/{alias}/rows/query:
+    post:
+      parameters:
+      - explode: false
+        in: path
+        name: alias
+        required: true
+        schema:
+          type: string
+        style: simple
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/_tables__alias__rows_query_post_request"
+        required: true
+      responses:
+        "200":
+          description: TableRows
+        "400":
+          description: unknown column/op or unsupported value
+      summary: read one page of a table (validated filters/sort/projection; no raw
+        SQL crosses the wire)
+  /tables/{alias}/rows:
+    patch:
+      parameters:
+      - explode: false
+        in: path
+        name: alias
+        required: true
+        schema:
+          type: string
+        style: simple
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/_tables__alias__rows_patch_request"
+        required: true
+      responses:
+        "200":
+          description: TableRowMutation (updated counter)
+      summary: update rows keyed by primary key (zero rows matched → row_conflict
+        per item)
+    post:
+      parameters:
+      - explode: false
+        in: path
+        name: alias
+        required: true
+        schema:
+          type: string
+        style: simple
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/_tables__alias__rows_post_request"
+        required: true
+      responses:
+        "200":
+          description: TableRowMutation (inserted counter)
+      summary: insert rows (per-row authoritative outcome; auto columns are omitted)
+  /tables/{alias}/rows/delete:
+    post:
+      parameters:
+      - explode: false
+        in: path
+        name: alias
+        required: true
+        schema:
+          type: string
+        style: simple
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/_tables__alias__rows_delete_post_request"
+        required: true
+      responses:
+        "200":
+          description: TableRowMutation (deleted counter)
+      summary: delete rows keyed by primary key (zero rows matched → row_conflict
+        per item)
+  /tables/{alias}/truncate:
+    post:
+      parameters:
+      - explode: false
+        in: path
+        name: alias
+        required: true
+        schema:
+          type: string
+        style: simple
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/_tables__alias__truncate_post_request"
+        required: true
+      responses:
+        "200":
+          description: truncated + native statement
+        "400":
+          description: confirm mismatch
+        "403":
+          description: query:schema:write required (or read-only connection)
+      summary: delete every row of a table — requires confirm to exactly equal the
+        table name
+  /tables/{alias}/drop:
+    post:
+      parameters:
+      - explode: false
+        in: path
+        name: alias
+        required: true
+        schema:
+          type: string
+        style: simple
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/_tables__alias__drop_post_request"
+        required: true
+      responses:
+        "200":
+          description: dropped + native statement; schema cache invalidated
+        "400":
+          description: confirm mismatch or unsupported cascade
+        "403":
+          description: query:schema:write required (or read-only connection)
+      summary: drop a table — requires confirm to exactly equal the table name
+  /query/stream:
+    post:
+      description: "NDJSON stream: {\"columns\":[...]} then {\"row\":[...]}* then\
+        \ {\"done\":{row_count,duration_ms,strategy,query_id}} — or a terminal {\"\
+        error\":{code,message}} frame. SQL pushdown plans stream row-by-row; other\
+        \ plans buffer then flush in batches."
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/_query_stream_post_request"
+        required: true
+      responses:
+        "200":
+          content:
+            application/x-ndjson:
+              schema:
+                type: string
+          description: application/x-ndjson frame sequence
+        "400":
+          description: unsupported statement for streaming
+  /files:
+    get:
+      description: list query files as a tree (content omitted)
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/_files_get_200_response"
+          description: tree of query-file nodes
+    post:
+      description: create a query file (or folder — any node may parent others)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/_files_post_request"
+        required: true
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/_files_post_201_response"
+          description: created node
+        "400":
+          description: invalid name or unknown parent
+  /files/{id}:
+    delete:
+      description: delete node and all descendants; returns deleted count
+      parameters:
+      - explode: false
+        in: path
+        name: id
+        required: true
+        schema:
+          type: string
+        style: simple
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/_files__id__delete_200_response"
+          description: removed
+        "404":
+          description: no such file
+    get:
+      description: read one query file including content
+      parameters:
+      - explode: false
+        in: path
+        name: id
+        required: true
+        schema:
+          type: string
+        style: simple
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/_files_post_201_response"
+          description: the file
+        "404":
+          description: no such file
+    put:
+      description: save name and/or content (at least one required)
+      parameters:
+      - explode: false
+        in: path
+        name: id
+        required: true
+        schema:
+          type: string
+        style: simple
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/_files__id__put_request"
+        required: true
+      responses:
+        "200":
+          description: updated file
+        "400":
+          description: nothing to save / content over 1 MiB cap
+        "404":
+          description: no such file
+  /bi/dashboards:
+    get:
+      description: "list the org's BI dashboards (metadata only, tiles omitted)"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/_bi_dashboards_get_200_response"
+          description: dashboards of the caller's org
+    post:
+      description: "create a dashboard; tiles is a validated JSON array (≤100 objects\
+        \ each with a string `type`, ≤1 MiB)"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/_bi_dashboards_post_request"
+        required: true
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/_bi_dashboards_post_201_response"
+          description: created dashboard
+        "400":
+          description: invalid name or tiles contract
+  /bi/dashboards/{id}:
+    delete:
+      description: delete the dashboard (org-scoped)
+      parameters:
+      - explode: false
+        in: path
+        name: id
+        required: true
+        schema:
+          type: string
+        style: simple
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/_bi_dashboards__id__delete_200_response"
+          description: removed
+        "404":
+          description: no such dashboard
+    get:
+      description: read one dashboard including its tiles
+      parameters:
+      - explode: false
+        in: path
+        name: id
+        required: true
+        schema:
+          type: string
+        style: simple
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/_bi_dashboards_post_201_response"
+          description: the dashboard
+        "404":
+          description: no such dashboard
+    put:
+      description: save name and/or tiles and/or filters (at least one required);
+        org-scoped
+      parameters:
+      - explode: false
+        in: path
+        name: id
+        required: true
+        schema:
+          type: string
+        style: simple
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/_bi_dashboards__id__put_request"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/_bi_dashboards_post_201_response"
+          description: updated dashboard
+        "400":
+          description: nothing to save / tiles contract violated
+        "404":
+          description: no such dashboard
+  /bi/dashboards/{id}/data:
+    post:
+      description: |
+        M3: refresh ALL tiles of one dashboard in a single request — each tile's SQL (with `:params` bound from the filter values) runs through the standard pipeline in parallel, served through the per-tile TTL cache (`refresh_ttl_secs`). Tile SQL executes with the CALLER's principal, so data-plane connection ACLs keep applying. Gated on bi:dashboards:view (viewers ride the cached, tile-vetted surface instead of raw query:execute:run).
+      parameters:
+      - explode: false
+        in: path
+        name: id
+        required: true
+        schema:
+          type: string
+        style: simple
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/_bi_dashboards__id__data_post_request"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BiDashboardData"
+          description: per-tile results (cached or freshly executed); `drill` present
+            when requested
+        "403":
+          description: missing bi:dashboards:view
+        "404":
+          description: no such dashboard
+  /bi/dashboards/{id}/embed:
+    delete:
+      description: revoke the embed token (embeds stop resolving immediately)
+      parameters:
+      - explode: false
+        in: path
+        name: id
+        required: true
+        schema:
+          type: string
+        style: simple
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/_bi_dashboards__id__embed_delete_200_response"
+          description: revoked
+        "403":
+          description: missing bi:dashboards:manage
+    post:
+      description: |
+        M4: create (or ROTATE) the dashboard's public embed token (rbi_ + 32 hex chars of CSPRNG). The token is the only credential on the public /v1/bi/embed/{token} routes; rotation invalidates every previously distributed URL. Gated on bi:dashboards:manage.
+      parameters:
+      - explode: false
+        in: path
+        name: id
+        required: true
+        schema:
+          type: string
+        style: simple
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/_bi_dashboards__id__embed_post_200_response"
+          description: minted token + the embed page path
+        "403":
+          description: missing bi:dashboards:manage
+        "404":
+          description: no such dashboard
+  /bi/embed/{token}:
+    get:
+      description: |
+        M4 PUBLIC (no session; the URL token is the credential): the embed page's document — name, tiles and filters of one dashboard. Token mismatch revokes to the same 404.
+      parameters:
+      - explode: false
+        in: path
+        name: token
+        required: true
+        schema:
+          type: string
+        style: simple
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/_bi_embed__token__get_200_response"
+          description: the embeddable dashboard document
+        "404":
+          description: unknown or revoked token
+        "429":
+          description: per-token rate limit exceeded
+  /bi/embed/{token}/data:
+    post:
+      description: |
+        M4 PUBLIC: tile data for the embed page. Snapshot-first (a stored snapshot answers without touching the data plane); live fallback executes tile SQL under the dashboard's ORG principal (there is no caller identity), TTL-cached like the authenticated /data route and rate-limited per token.
+      parameters:
+      - explode: false
+        in: path
+        name: token
+        required: true
+        schema:
+          type: string
+        style: simple
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/_bi_embed__token__data_post_request"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BiDashboardData"
+          description: per-tile results; source is "snapshot" or "live"
+        "404":
+          description: unknown or revoked token
+        "429":
+          description: per-token rate limit exceeded
+  /bi/dashboards/{id}/snapshot:
+    delete:
+      description: M4 — drop the stored snapshot
+      parameters:
+      - explode: false
+        in: path
+        name: id
+        required: true
+        schema:
+          type: string
+        style: simple
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/_bi_dashboards__id__delete_200_response"
+          description: removed
+    get:
+      description: "M4 — the latest stored snapshot (tiles + metadata), or null"
+      parameters:
+      - explode: false
+        in: path
+        name: id
+        required: true
+        schema:
+          type: string
+        style: simple
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/_bi_dashboards__id__snapshot_get_200_response"
+          description: latest snapshot or null when none captured yet
+    post:
+      description: |
+        M4: capture a fresh snapshot of every tile (parallel, cache-bypassing) under the CALLER's principal and store it as the dashboard's single latest snapshot (bi.snapshots, latest-wins). Slow sources: heavy tiles run on the manager's schedule; viewers and embeds replay the stored results. Gated on bi:dashboards:manage.
+      parameters:
+      - explode: false
+        in: path
+        name: id
+        required: true
+        schema:
+          type: string
+        style: simple
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/_bi_dashboards__id__snapshot_post_200_response"
+          description: snapshot captured
+        "403":
+          description: missing bi:dashboards:manage
+  /bi/tile/preview:
+    post:
+      description: |
+        run ONE tile's SQL through the standard pipeline and return the result set for the dashboard renderer. Read-only by construction — only SELECT queries are accepted. Gated on query:execute:run (the same permission as POST /v1/query). M3: `:params` bind from `values` (macro substitution with typed literals — numeric stays unquoted, everything else is quote-escaped).
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/_bi_tile_preview_post_request"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QueryResult"
+          description: executed result set (columns + rows) for the renderer
+        "400":
+          description: not a SELECT / failed to parse
+        "403":
+          description: missing query:execute:run
+  /ai/nl-to-sql:
+    post:
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/_ai_nl_to_sql_post_request"
+      responses:
+        "200":
+          description: generated SQL + validity
+        "503":
+          description: opencode unavailable
+  /ai/conversations:
+    post:
+      description: |
+        Create a Lily conversation thread (full transcript stored server-side, org-scoped). Title falls back to "New chat".
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/_ai_conversations_post_request"
+      responses:
+        "200":
+          description: created conversation (full transcript)
+        "400":
+          description: caps violated (messages count / bytes / title)
+  /ai/conversations/{id}:
+    delete:
+      parameters:
+      - explode: false
+        in: path
+        name: id
+        required: true
+        schema:
+          type: string
+        style: simple
+      responses:
+        "200":
+          description: removed
+        "404":
+          description: no such conversation (org-scoped)
+    get:
+      parameters:
+      - explode: false
+        in: path
+        name: id
+        required: true
+        schema:
+          type: string
+        style: simple
+      responses:
+        "200":
+          description: one conversation with its full transcript
+        "404":
+          description: no such conversation (org-scoped)
+    parameters:
+    - explode: false
+      in: path
+      name: id
+      required: true
+      schema:
+        type: string
+      style: simple
+    put:
+      description: Save title and/or messages (at least one required).
+      parameters:
+      - explode: false
+        in: path
+        name: id
+        required: true
+        schema:
+          type: string
+        style: simple
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/_ai_conversations__id__put_request"
+      responses:
+        "200":
+          description: saved conversation
+        "404":
+          description: no such conversation (org-scoped)
+  /ai/lily:
+    post:
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/_ai_lily_post_request"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/_ai_lily_post_200_response"
+          description: Lily reply + extracted SQL + whitelisted confirm-cards
+  /ai/bi/tile:
+    post:
+      description: |
+        Lily generates ONE BI dashboard tile spec grounded in the introspected schema (same permission as the other Lily routes). The result is validated structurally (bi::validate_tiles) and its query parse-checked — editor-ready, never auto-executed.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/_ai_bi_tile_post_request"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/_ai_bi_tile_post_200_response"
+          description: generated tile + validity verdict
+        "503":
+          description: opencode unavailable
+  /ai/summarize:
+    post:
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/_ai_summarize_post_request"
+      responses:
+        "200":
+          description: natural-language summary with sampling disclosure
+  /ai/status:
+    get:
+      responses:
+        "200":
+          description: opencode availability + model
+      security: []
+  /databases:
+    get:
+      responses:
+        "200":
+          description: instance list
+      summary: list instances + status + endpoint + live health
+    post:
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/_databases_post_request"
+        required: true
+      responses:
+        "202":
+          description: accepted; instance provisioning (WardenInstance)
+        "400":
+          description: WARDEN_INVALID_REQUEST
+        "403":
+          description: WARDEN_QUOTA_EXCEEDED / disk headroom
+        "503":
+          description: WARDEN_DOCKER_UNAVAILABLE
+      summary: request a database instance (async provisioning job)
+  /databases/{fqdn}:
+    delete:
+      parameters:
+      - explode: false
+        in: path
+        name: fqdn
+        required: true
+        schema:
+          type: string
+        style: simple
+      - explode: true
+        in: query
+        name: mode
+        required: false
+        schema:
+          enum:
+          - archive
+          - ""
+          type: string
+        style: form
+      - explode: true
+        in: query
+        name: force
+        required: false
+        schema:
+          type: boolean
+        style: form
+      responses:
+        "200":
+          description: archived; artifact path when dumped
+        "409":
+          description: WARDEN_DESTROY_REFUSED
+      summary: destroy an instance (refuses non-empty unless mode=archive or force=true)
+    get:
+      parameters:
+      - explode: false
+        in: path
+        name: fqdn
+        required: true
+        schema:
+          type: string
+        style: simple
+      responses:
+        "200":
+          description: WardenInstance
+        "404":
+          description: NOT_FOUND
+      summary: "instance detail (engine, size, health, alias)"
+  /databases/{fqdn}/restart:
+    post:
+      parameters:
+      - explode: false
+        in: path
+        name: fqdn
+        required: true
+        schema:
+          type: string
+        style: simple
+      responses:
+        "200":
+          description: WardenInstance post-restart
+      summary: stop+start keeping the data volume
+  /databases/{fqdn}/health:
+    get:
+      parameters:
+      - explode: false
+        in: path
+        name: fqdn
+        required: true
+        schema:
+          type: string
+        style: simple
+      responses:
+        "200":
+          description: status + endpoint
+      summary: health banner (status from a real adapter ping)
+  /warden/audit:
+    get:
+      responses:
+        "200":
+          description: audit rows
+      summary: lifecycle audit trail (request/active/destroy/restart per principal)
+  /auth/register:
+    post:
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/_auth_register_post_request"
+        required: true
+      responses:
+        "201":
+          description: org + owner user created; returns access/refresh tokens
+        "400":
+          description: validation error
+      security: []
+  /auth/login:
+    post:
+      requestBody:
+        content:
+          application/json:
+            schema:
+              required:
+              - email
+              - password
+              type: object
+        required: true
+      responses:
+        "200":
+          description: "TokenPair (access_token JWT HS256, refresh_token)"
+        "401":
+          description: invalid credentials
+      security: []
+  /auth/refresh:
+    post:
+      requestBody:
+        content:
+          application/json:
+            schema:
+              required:
+              - refresh_token
+              type: object
+        required: true
+      responses:
+        "200":
+          description: rotated TokenPair (old refresh invalidated)
+      security: []
+  /auth/me:
+    get:
+      responses:
+        "200":
+          description: "resolved Principal (org_id, user_id, role, via, permissions[])"
+  /auth/permissions:
+    get:
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/_auth_permissions_get_200_response"
+          description: |
+            V6 permission framework — `role`, `permissions` (the caller's
+            effective `module:resource:action` set) and `catalog` (every
+            guarded permission with its description). Routes are gated by
+            `rbac_mw` against this table; unknown routes fail closed.
+      summary: caller's effective permissions + the full module:resource:action catalog
+  /auth/users:
+    get:
+      responses:
+        "200":
+          description: "org members — id, email, role, permissions[] (custom grants),\
+            \ created_at"
+    post:
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/_auth_users_post_request"
+        required: true
+      responses:
+        "201":
+          description: member added
+        "403":
+          description: requires admin; cannot grant above own role or permissions
+            you do not hold
+  /auth/users/{id}:
+    patch:
+      parameters:
+      - explode: false
+        in: path
+        name: id
+        required: true
+        schema:
+          type: string
+        style: simple
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/_auth_users__id__patch_request"
+        required: true
+      responses:
+        "200":
+          description: updated member
+        "403":
+          description: target above caller role / ceiling violation
+      summary: edit a member's role and/or custom permission grants
+  /auth/org:
+    patch:
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/_auth_org_patch_request"
+      responses:
+        "200":
+          description: updated org
+      summary: edit the organization profile (account:org:manage)
+  /auth/change-password:
+    post:
+      requestBody:
+        content:
+          application/json:
+            schema:
+              required:
+              - current_password
+              - new_password
+              type: object
+        required: true
+      responses:
+        "200":
+          description: password changed
+        "401":
+          description: current password incorrect
+      summary: self-service password change (invalidates all refresh tokens)
+  /auth/api-keys:
+    get:
+      responses:
+        "200":
+          description: "org api keys — id, name, prefix, role, permissions[], last_used_at,\
+            \ revoked"
+    post:
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/_auth_api_keys_post_request"
+        required: true
+      responses:
+        "201":
+          description: plaintext rqk_ key shown exactly once
+  /auth/api-keys/{id}:
+    delete:
+      parameters:
+      - explode: false
+        in: path
+        name: id
+        required: true
+        schema:
+          type: string
+        style: simple
+      responses:
+        "200":
+          description: revoked
+    patch:
+      parameters:
+      - explode: false
+        in: path
+        name: id
+        required: true
+        schema:
+          type: string
+        style: simple
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/_auth_users__id__patch_request"
+      responses:
+        "200":
+          description: updated key
+      summary: edit a key's role and/or permission grants (account:apikeys:edit)
+  /analytics/summary:
+    get:
+      parameters:
+      - explode: true
+        in: query
+        name: range
+        required: false
+        schema:
+          default: 7
+          maximum: 90
+          type: integer
+        style: form
+      responses:
+        "200":
+          description: |
+            org-scoped usage meters + live usage overlay. `usage` counts every
+            live river container (databases, notebooks, filestore buckets):
+            { live_instances, databases, notebooks, filestores,
+              storage_gb_used, ram_gb_used, cores_used }.
+  /platform/capacity:
+    get:
+      responses:
+        "200":
+          description: |
+            node totals (docker info — host values), allocation census
+            ({ live_instances, databases, notebooks, filestores, ram_gb, cores }),
+            runway reserve, expansion flag. disk_free_gb reads the host disk.
+  /platform/compute:
+    get:
+      responses:
+        "200":
+          description: |
+            Dedicated-VPS host compute (Compute tab): host/cpu/memory/storage/
+            network/processes (user-installed only) + docker capacity runway.
+            All values are HOST-scoped — in containerized deploys they are read
+            from the host through the /hostroot bind (`host_scoped: true`);
+            bare-metal/dev reads the local machine (`host_scoped: false`).
+            `alerts[]` is advisory — resource pressure never blocks provisioning.
+  /query/script:
+    post:
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/_query_script_post_request"
+        required: true
+      responses:
+        "200":
+          description: |
+            ScriptReport { ok, committed, transactional, steps[] } — each step
+            carries index, statement, status (ok|error|rolled_back|
+            skipped_after_error), affected/rows and the native statement.
+        "400":
+          description: parse error or txn control in autocommit mode
+        "403":
+          description: requires developer+ (DDL gate)
+  /tools/{alias}/export:
+    post:
+      parameters:
+      - explode: false
+        in: path
+        name: alias
+        required: true
+        schema:
+          type: string
+        style: simple
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/_tools__alias__export_post_request"
+        required: true
+      responses:
+        "200":
+          description: file attachment
+      summary: export one table/collection as json | ndjson | csv (download)
+  /tools/{alias}/import:
+    post:
+      parameters:
+      - explode: false
+        in: path
+        name: alias
+        required: true
+        schema:
+          type: string
+        style: simple
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/_tools__alias__import_post_request"
+        required: true
+      responses:
+        "200":
+          description: ImportReport
+      summary: import json | ndjson | csv rows into a table (auto-create optional)
+  /tools/{alias}/backup:
+    get:
+      parameters:
+      - explode: false
+        in: path
+        name: alias
+        required: true
+        schema:
+          type: string
+        style: simple
+      responses:
+        "200":
+          description: backup file attachment
+      summary: "full logical backup (download + server-side archive copy, 0600)"
+  /tools/{alias}/restore:
+    post:
+      parameters:
+      - explode: false
+        in: path
+        name: alias
+        required: true
+        schema:
+          type: string
+        style: simple
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/_tools__alias__restore_post_request"
+        required: true
+      responses:
+        "200":
+          description: RestoreSummary
+        "400":
+          description: unsupported format (e.g. pg_dump custom -Fc) or undecodable
+            payload
+      summary: "restore tables from an inline payload or server-side artifact — format\
+        \ auto-detected: riverql-backup JSON, engine-native SQL dumps (pg_dump plain\
+        \ / mysqldump / sqlite .dump), and compressed or containerized variants (gzip,\
+        \ zstd, bzip2, xz, tar, zip)"
+  /tools/{alias}/restore/upload:
+    post:
+      parameters:
+      - explode: false
+        in: path
+        name: alias
+        required: true
+        schema:
+          type: string
+        style: simple
+      - explode: true
+        in: query
+        name: filename
+        required: false
+        schema:
+          type: string
+        style: form
+      - explode: true
+        in: query
+        name: create_missing_tables
+        required: false
+        schema:
+          default: true
+          type: boolean
+        style: form
+      requestBody:
+        content:
+          application/octet-stream:
+            schema:
+              description: payload ≤ 70 MiB
+              format: binary
+              type: string
+        required: true
+      responses:
+        "200":
+          description: RestoreSummary
+        "400":
+          description: unsupported format or undecodable payload
+      summary: restore from a raw uploaded file (binary archives can't ride a JSON
+        body) — same auto-detection as /restore; optional ?filename= is a hint
+  /archives:
+    get:
+      responses:
+        "200":
+          description: ArchiveEntry list
+      summary: list saved backup/archive artifacts
+  /servers/{alias}/databases:
+    get:
+      parameters:
+      - explode: false
+        in: path
+        name: alias
+        required: true
+        schema:
+          type: string
+        style: simple
+      responses:
+        "200":
+          description: "{ alias, backend, databases:[{name,size_bytes}] }"
+      summary: databases living on a server instance (server-centric catalogs)
+    post:
+      parameters:
+      - explode: false
+        in: path
+        name: alias
+        required: true
+        schema:
+          type: string
+        style: simple
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/_servers__alias__databases_post_request"
+        required: true
+      responses:
+        "200":
+          description: derived alias + table list
+      summary: attach a database as an ephemeral queryable alias (`srv__db`) + introspect
+  /servers/{alias}/analytics:
+    get:
+      parameters:
+      - explode: false
+        in: path
+        name: alias
+        required: true
+        schema:
+          type: string
+        style: simple
+      responses:
+        "200":
+          description: ServerAnalytics
+      summary: "pgAdmin-style performance snapshot (connections, cache, sizes; container\
+        \ CPU/RAM for warden instances)"
+  /servers/{alias}/users:
+    get:
+      parameters:
+      - explode: false
+        in: path
+        name: alias
+        required: true
+        schema:
+          type: string
+        style: simple
+      responses:
+        "200":
+          description: user list
+      summary: list database users/roles
+    post:
+      parameters:
+      - explode: false
+        in: path
+        name: alias
+        required: true
+        schema:
+          type: string
+        style: simple
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/_servers__alias__users_post_request"
+        required: true
+      responses:
+        "201":
+          description: created
+      summary: create a DB user with role/table grants
+  /servers/{alias}/connection-string:
+    get:
+      parameters:
+      - explode: false
+        in: path
+        name: alias
+        required: true
+        schema:
+          type: string
+        style: simple
+      - explode: true
+        in: query
+        name: reveal
+        required: false
+        schema:
+          type: boolean
+        style: form
+      responses:
+        "200":
+          description: uri/cli/key-value variants
+      summary: ready-to-paste connection strings (masked unless reveal=true)
+  /servers/{alias}/access-allowlist:
+    get:
+      parameters:
+      - explode: false
+        in: path
+        name: alias
+        required: true
+        schema:
+          type: string
+        style: simple
+      responses:
+        "200":
+          description: cidrs
+        "400":
+          description: UNSUPPORTED_OPERATION — not platform-owned
+      summary: persisted IP allowlist for a warden-provisioned instance
+    put:
+      parameters:
+      - explode: false
+        in: path
+        name: alias
+        required: true
+        schema:
+          type: string
+        style: simple
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/_servers__alias__access_allowlist_put_request"
+        required: true
+      responses:
+        "200":
+          description: applied
+      summary: "apply + persist IP allowlist (native pg_hba.conf enforcement, live\
+        \ reload)"
+  /notebooks:
+    get:
+      responses:
+        "200":
+          description: tree of notebook nodes
+      summary: notebook tree for the caller's org
+    post:
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/_notebooks_post_request"
+        required: true
+      responses:
+        "201":
+          description: created (nbformat 4.5 doc with stable cell ids)
+  /notebooks/{id}:
+    delete:
+      parameters:
+      - explode: false
+        in: path
+        name: id
+        required: true
+        schema:
+          type: string
+        style: simple
+      responses:
+        "200":
+          description: removed
+      summary: delete notebook (and its runtime if running)
+    get:
+      parameters:
+      - explode: false
+        in: path
+        name: id
+        required: true
+        schema:
+          type: string
+        style: simple
+      responses:
+        "200":
+          description: notebook doc
+      summary: full notebook document
+    put:
+      parameters:
+      - explode: false
+        in: path
+        name: id
+        required: true
+        schema:
+          type: string
+        style: simple
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/_notebooks__id__put_request"
+      responses:
+        "200":
+          description: saved
+      summary: save (autosave + ⌘S path)
+  /notebooks/{id}/runtime:
+    delete:
+      parameters:
+      - explode: false
+        in: path
+        name: id
+        required: true
+        schema:
+          type: string
+        style: simple
+      responses:
+        "200":
+          description: stopped
+      summary: stop the runtime (volume persists)
+    get:
+      parameters:
+      - explode: false
+        in: path
+        name: id
+        required: true
+        schema:
+          type: string
+        style: simple
+      responses:
+        "200":
+          description: status
+      summary: "runtime status (image, health, seeded connections)"
+    post:
+      parameters:
+      - explode: false
+        in: path
+        name: id
+        required: true
+        schema:
+          type: string
+        style: simple
+      responses:
+        "202":
+          description: provisioning
+      summary: start the per-notebook container (202 → poll GET until running/failed)
+  /notebooks/{id}/runtime/restart:
+    post:
+      parameters:
+      - explode: false
+        in: path
+        name: id
+        required: true
+        schema:
+          type: string
+        style: simple
+      responses:
+        "200":
+          description: restarted
+      summary: restart the runtime container
+  /notebooks/{id}/execute:
+    post:
+      description: "Cells that render ipywidgets outputs additionally return a `widgets`\
+        \ object (model_id → widget-state entry) and persist it into the document\
+        \ metadata under `widgets` (nbformat application/vnd.jupyter.widget-state+json)\
+        \ so widget views re-render without a kernel. Widget packages (ipywidgets,\
+        \ jupyterlab_widgets, ipympl) are installed into the runtime at provisioning."
+      parameters:
+      - explode: false
+        in: path
+        name: id
+        required: true
+        schema:
+          type: string
+        style: simple
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/_notebooks__id__execute_post_request"
+        required: true
+      responses:
+        "200":
+          description: outputs (stream/execute_result/display_data/error)
+        "409":
+          description: cell already executing / stale state
+      summary: execute one cell; returns outputs + execution count
+  /notebooks/{id}/execute/stream:
+    post:
+      description: "NDJSON stream of kernel output messages for one cell execution\
+        \ — same frames as /notebooks/{id}/execute, delivered live. The final `{\"\
+        type\":\"done\",\"cell\":…}` frame may carry a `widgets` object with the captured\
+        \ ipywidgets model state."
+      parameters:
+      - explode: false
+        in: path
+        name: id
+        required: true
+        schema:
+          type: string
+        style: simple
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/_notebooks__id__execute_stream_post_request"
+        required: true
+      responses:
+        "200":
+          content:
+            application/x-ndjson:
+              schema:
+                type: string
+          description: application/x-ndjson frame sequence
+  /notebooks/{id}/kernel/interrupt:
+    post:
+      parameters:
+      - explode: false
+        in: path
+        name: id
+        required: true
+        schema:
+          type: string
+        style: simple
+      responses:
+        "200":
+          description: interrupted
+      summary: interrupt the kernel (KeyboardInterrupt surfaced as output)
+  /notebooks/{id}/kernel/restart:
+    post:
+      parameters:
+      - explode: false
+        in: path
+        name: id
+        required: true
+        schema:
+          type: string
+        style: simple
+      responses:
+        "200":
+          description: restarted
+      summary: "restart the kernel (namespace cleared, outputs marked stale)"
+  /notebooks/{id}/complete:
+    post:
+      parameters:
+      - explode: false
+        in: path
+        name: id
+        required: true
+        schema:
+          type: string
+        style: simple
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/_notebooks__id__complete_post_request"
+        required: true
+      responses:
+        "200":
+          description: completion candidates
+      summary: kernel-level code completion for the Monaco notebook editor
+  /notebooks/{id}/connections:
+    get:
+      parameters:
+      - explode: false
+        in: path
+        name: id
+        required: true
+        schema:
+          type: string
+        style: simple
+      responses:
+        "200":
+          description: connection list
+      summary: the org's connections reachable by catalog name (cheat-sheet snippets)
+  /jobs:
+    get:
+      responses:
+        "200":
+          description: "jobs: [job summary]"
+      summary: list the org's jobs (summaries — no sql body)
+    post:
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/_jobs_post_request"
+        required: true
+      responses:
+        "201":
+          description: created job
+  /jobs/{id}:
+    delete:
+      parameters:
+      - explode: false
+        in: path
+        name: id
+        required: true
+        schema:
+          type: string
+        style: simple
+      responses:
+        "200":
+          description: removed
+      summary: delete job (cascades to runs)
+    get:
+      parameters:
+      - explode: false
+        in: path
+        name: id
+        required: true
+        schema:
+          type: string
+        style: simple
+      responses:
+        "200":
+          description: job
+      summary: full job (includes sql)
+    put:
+      parameters:
+      - explode: false
+        in: path
+        name: id
+        required: true
+        schema:
+          type: string
+        style: simple
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/_jobs__id__put_request"
+      responses:
+        "200":
+          description: updated job
+      summary: update job fields
+  /jobs/{id}/runs:
+    get:
+      parameters:
+      - explode: false
+        in: path
+        name: id
+        required: true
+        schema:
+          type: string
+        style: simple
+      responses:
+        "200":
+          description: "runs: [run]"
+      summary: "run history (lean rows — no result payload), newest first, limit 100"
+  /jobs/{id}/runs/{run_id}:
+    get:
+      description: "The run's `result` object holds `columns`, up to 100 rows, `row_count`,\
+        \ `duration_ms` and a `truncated` flag (absent until the run completes)."
+      parameters:
+      - explode: false
+        in: path
+        name: id
+        required: true
+        schema:
+          type: string
+        style: simple
+      - explode: false
+        in: path
+        name: run_id
+        required: true
+        schema:
+          type: string
+        style: simple
+      responses:
+        "200":
+          description: "run: run-with-result"
+      summary: single-run detail including captured result
+  /jobs/{id}/trigger:
+    post:
+      parameters:
+      - explode: false
+        in: path
+        name: id
+        required: true
+        schema:
+          type: string
+        style: simple
+      responses:
+        "201":
+          description: queued run
+      summary: queue a manual run (pending → executor picks it up)
+  /containers:
+    get:
+      responses:
+        "200":
+          description: "apps: [ContainerApp]"
+      summary: list the org's container apps
+    post:
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/_containers_post_request"
+        required: true
+      responses:
+        "201":
+          description: "app: ContainerApp"
+  /containers/registry/info:
+    get:
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/_containers_registry_info_get_200_response"
+          description: "endpoint, username, token"
+      summary: built-in registry endpoint + push credentials for the caller's org
+  /containers/{id}:
+    delete:
+      parameters:
+      - explode: false
+        in: path
+        name: id
+        required: true
+        schema:
+          type: string
+        style: simple
+      responses:
+        "200":
+          description: removed
+      summary: delete container app (stops container first)
+    get:
+      parameters:
+      - explode: false
+        in: path
+        name: id
+        required: true
+        schema:
+          type: string
+        style: simple
+      responses:
+        "200":
+          description: "app: ContainerApp"
+      summary: get a container app by id
+    put:
+      parameters:
+      - explode: false
+        in: path
+        name: id
+        required: true
+        schema:
+          type: string
+        style: simple
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/_containers__id__put_request"
+      responses:
+        "200":
+          description: "app: ContainerApp"
+      summary: "update container app fields (name, image, env_vars)"
+  /containers/{id}/deploy:
+    post:
+      parameters:
+      - explode: false
+        in: path
+        name: id
+        required: true
+        schema:
+          type: string
+        style: simple
+      responses:
+        "200":
+          description: "app: ContainerApp (status=running, route_published=true)"
+      summary: pull image and start container with Traefik routing labels
+  /containers/{id}/stop:
+    post:
+      parameters:
+      - explode: false
+        in: path
+        name: id
+        required: true
+        schema:
+          type: string
+        style: simple
+      responses:
+        "200":
+          description: "app: ContainerApp (status=stopped)"
+      summary: stop the running container (route_published becomes false)
+  /containers/{id}/logs:
+    get:
+      parameters:
+      - explode: false
+        in: path
+        name: id
+        required: true
+        schema:
+          type: string
+        style: simple
+      - explode: true
+        in: query
+        name: tail
+        required: false
+        schema:
+          default: 100
+          type: integer
+        style: form
+      responses:
+        "200":
+          description: "lines: [string]"
+      summary: recent container log lines
+  /filestore/buckets:
+    get:
+      responses:
+        "200":
+          description: buckets
+      summary: list the org's buckets
+    post:
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/_filestore_buckets_post_request"
+        required: true
+      responses:
+        "202":
+          description: "provisioning — poll GET /filestore/buckets/{id} until running/failed"
+  /filestore/buckets/{id}:
+    delete:
+      parameters:
+      - explode: false
+        in: path
+        name: id
+        required: true
+        schema:
+          type: string
+        style: simple
+      responses:
+        "200":
+          description: destroyed
+      summary: destroy bucket (warden teardown + archive)
+    get:
+      parameters:
+      - explode: false
+        in: path
+        name: id
+        required: true
+        schema:
+          type: string
+        style: simple
+      responses:
+        "200":
+          description: bucket
+      summary: bucket status
+    patch:
+      parameters:
+      - explode: false
+        in: path
+        name: id
+        required: true
+        schema:
+          type: string
+        style: simple
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/_filestore_buckets__id__patch_request"
+        required: true
+      responses:
+        "200":
+          description: bucket updated
+      summary: Cloudfront-style static hosting on the bucket root
+    put:
+      parameters:
+      - explode: false
+        in: path
+        name: id
+        required: true
+        schema:
+          type: string
+        style: simple
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/_filestore_buckets_post_request"
+        required: true
+      responses:
+        "200":
+          description: renamed
+      summary: rename bucket
+  /filestore/buckets/{id}/nodes:
+    get:
+      parameters:
+      - explode: false
+        in: path
+        name: id
+        required: true
+        schema:
+          type: string
+        style: simple
+      responses:
+        "200":
+          description: nodes
+      summary: list nodes (files/folders) in a bucket
+    post:
+      parameters:
+      - explode: false
+        in: path
+        name: id
+        required: true
+        schema:
+          type: string
+        style: simple
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/_filestore_buckets__id__nodes_post_request"
+        required: true
+      responses:
+        "201":
+          description: node created
+      summary: mkdir (folders are nodes with children)
+  /filestore/buckets/{id}/upload:
+    put:
+      parameters:
+      - explode: false
+        in: path
+        name: id
+        required: true
+        schema:
+          type: string
+        style: simple
+      - explode: true
+        in: query
+        name: name
+        required: true
+        schema:
+          type: string
+        style: form
+      - explode: true
+        in: query
+        name: parent
+        required: false
+        schema:
+          type: string
+        style: form
+      - explode: true
+        in: query
+        name: overwrite
+        required: false
+        schema:
+          type: boolean
+        style: form
+      requestBody:
+        content:
+          application/octet-stream:
+            schema:
+              format: binary
+              type: string
+        required: true
+      responses:
+        "201":
+          description: node stored
+      summary: upload raw bytes as a file node
+  /filestore/nodes/{id}:
+    delete:
+      parameters:
+      - explode: false
+        in: path
+        name: id
+        required: true
+        schema:
+          type: string
+        style: simple
+      responses:
+        "200":
+          description: removed (deleted_count returned)
+      summary: delete node recursively
+    get:
+      parameters:
+      - explode: false
+        in: path
+        name: id
+        required: true
+        schema:
+          type: string
+        style: simple
+      responses:
+        "200":
+          description: node
+      summary: node metadata
+    patch:
+      parameters:
+      - explode: false
+        in: path
+        name: id
+        required: true
+        schema:
+          type: string
+        style: simple
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/_filestore_nodes__id__patch_request"
+        required: true
+      responses:
+        "200":
+          description: node updated
+      summary: "visibility (private|public) and, for folders, static-hosting settings"
+    put:
+      parameters:
+      - explode: false
+        in: path
+        name: id
+        required: true
+        schema:
+          type: string
+        style: simple
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/_filestore_buckets_post_request"
+        required: true
+      responses:
+        "200":
+          description: renamed
+      summary: rename node
+  /filestore/nodes/{id}/content:
+    get:
+      parameters:
+      - explode: false
+        in: path
+        name: id
+        required: true
+        schema:
+          type: string
+        style: simple
+      - explode: true
+        in: query
+        name: download
+        required: false
+        schema:
+          type: boolean
+        style: form
+      responses:
+        "200":
+          content:
+            application/octet-stream:
+              schema:
+                format: binary
+                type: string
+          description: file content
+      summary: "raw bytes (download=1 → attachment disposition, else inline)"
+    put:
+      parameters:
+      - explode: false
+        in: path
+        name: id
+        required: true
+        schema:
+          type: string
+        style: simple
+      requestBody:
+        content:
+          application/octet-stream:
+            schema:
+              format: binary
+              type: string
+        required: true
+      responses:
+        "200":
+          description: node updated
+      summary: overwrite a file's bytes in place (raw body)
+  /filestore/nodes/{id}/view:
+    get:
+      parameters:
+      - explode: false
+        in: path
+        name: id
+        required: true
+        schema:
+          type: string
+        style: simple
+      responses:
+        "200":
+          description: "{ node, view: { kind, language?, table?, text?, json?, media?\
+            \ } }"
+      summary: parsed preview (table | json | text | media | html | binary)
+  /filestore/nodes/{id}/copy:
+    post:
+      parameters:
+      - explode: false
+        in: path
+        name: id
+        required: true
+        schema:
+          type: string
+        style: simple
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/_filestore_nodes__id__copy_post_request"
+        required: true
+      responses:
+        "201":
+          description: copied
+      summary: recursive copy into a target bucket/folder
+  /designer/designs:
+    get:
+      responses:
+        "200":
+          description: designs
+      summary: list org designs (metadata only — draft model omitted)
+    post:
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/_designer_designs_post_request"
+        required: true
+      responses:
+        "201":
+          description: created
+        "400":
+          description: validation error
+      summary: create a design with an empty draft
+  /designer/designs/{id}:
+    delete:
+      parameters:
+      - explode: false
+        in: path
+        name: id
+        required: true
+        schema:
+          type: string
+        style: simple
+      responses:
+        "200":
+          description: removed
+      summary: delete the design (versions and migrations cascade)
+    get:
+      parameters:
+      - explode: false
+        in: path
+        name: id
+        required: true
+        schema:
+          type: string
+        style: simple
+      responses:
+        "200":
+          description: design
+        "404":
+          description: not found
+      summary: design metadata + full draft model
+    parameters:
+    - explode: false
+      in: path
+      name: id
+      required: true
+      schema:
+        type: string
+      style: simple
+    put:
+      parameters:
+      - explode: false
+        in: path
+        name: id
+        required: true
+        schema:
+          type: string
+        style: simple
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/_designer_designs__id__put_request"
+      responses:
+        "200":
+          description: saved design
+      summary: autosave the draft (last-writer-wins)
+  /designer/designs/{id}/versions:
+    get:
+      parameters:
+      - explode: false
+        in: path
+        name: id
+        required: true
+        schema:
+          type: string
+        style: simple
+      responses:
+        "200":
+          description: versions
+      summary: "version history (newest first, model omitted)"
+    parameters:
+    - explode: false
+      in: path
+      name: id
+      required: true
+      schema:
+        type: string
+      style: simple
+  /designer/designs/{id}/versions/{version}:
+    get:
+      parameters:
+      - explode: false
+        in: path
+        name: id
+        required: true
+        schema:
+          type: string
+        style: simple
+      - explode: false
+        in: path
+        name: version
+        required: true
+        schema:
+          type: integer
+        style: simple
+      responses:
+        "200":
+          description: version
+        "404":
+          description: not found
+      summary: immutable version snapshot (full model)
+    parameters:
+    - explode: false
+      in: path
+      name: id
+      required: true
+      schema:
+        type: string
+      style: simple
+    - explode: false
+      in: path
+      name: version
+      required: true
+      schema:
+        type: integer
+      style: simple
+  /designer/designs/{id}/preview:
+    parameters:
+    - explode: false
+      in: path
+      name: id
+      required: true
+      schema:
+        type: string
+      style: simple
+    post:
+      parameters:
+      - explode: false
+        in: path
+        name: id
+        required: true
+        schema:
+          type: string
+        style: simple
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/_designer_designs__id__preview_post_request"
+      responses:
+        "200":
+          description: ops + statements
+      summary: "diff the draft against the latest published version → ordered ops\
+        \ + dialect SQL (no writes). Dialect defaults to the target connection's backend\
+        \ when `target_alias` is set, else postgres; override with `dialect` in the\
+        \ body."
+  /designer/designs/{id}/publish:
+    parameters:
+    - explode: false
+      in: path
+      name: id
+      required: true
+      schema:
+        type: string
+      style: simple
+    post:
+      parameters:
+      - explode: false
+        in: path
+        name: id
+        required: true
+        schema:
+          type: string
+        style: simple
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/_designer_designs__id__publish_post_request"
+      responses:
+        "200":
+          description: migration + nullable version (with per-statement results)
+        "400":
+          description: "destructive diff without confirm, or validation error"
+        "409":
+          description: no-op publish (empty diff)
+      summary: "two-step publish (V9.1): derive the N-1→N migration from the model\
+        \ diff and apply it immediately when the design has a `target_alias` (else\
+        \ the migration stays `pending`). The version snapshot commits only on migration\
+        \ success — a failed apply never consumes a version number (`version` comes\
+        \ back null and the failed migration row keeps its per-statement results for\
+        \ retry). Empty diff → 409; destructive ops require `confirm_destructive`."
+  /designer/designs/{id}/migrations:
+    get:
+      parameters:
+      - explode: false
+        in: path
+        name: id
+        required: true
+        schema:
+          type: string
+        style: simple
+      responses:
+        "200":
+          description: migrations
+      summary: migration history for the design (newest first)
+    parameters:
+    - explode: false
+      in: path
+      name: id
+      required: true
+      schema:
+        type: string
+      style: simple
+  /designer/migrations/{id}:
+    get:
+      parameters:
+      - explode: false
+        in: path
+        name: id
+        required: true
+        schema:
+          type: string
+        style: simple
+      responses:
+        "200":
+          description: migration
+        "404":
+          description: not found
+      summary: migration detail — ordered statements + per-statement apply results
+    parameters:
+    - explode: false
+      in: path
+      name: id
+      required: true
+      schema:
+        type: string
+      style: simple
+  /designer/migrations/{id}/apply:
+    parameters:
+    - explode: false
+      in: path
+      name: id
+      required: true
+      schema:
+        type: string
+      style: simple
+    post:
+      parameters:
+      - explode: false
+        in: path
+        name: id
+        required: true
+        schema:
+          type: string
+        style: simple
+      responses:
+        "200":
+          description: final migration state with per-statement results
+        "404":
+          description: not found
+      summary: "apply (or retry) a pending/failed/partial migration: drift preflight\
+        \ on a fresh introspection, then run — one transaction on postgres/sqlite\
+        \ (all-or-nothing), sequential autocommit on mysql (`partial` + resume). Applied\
+        \ migrations reject re-apply."
+components:
+  schemas:
+    ErrorEnvelope:
+      properties:
+        error:
+          $ref: "#/components/schemas/ErrorEnvelope_error"
+    ConnectionSummary:
+      properties:
+        alias:
+          type: string
+        backend_type:
+          enum:
+          - postgres
+          - mysql
+          - sqlite
+          - mongodb
+          type: string
+        display_name:
+          type: string
+        host:
+          type: string
+        port:
+          type: integer
+        database:
+          type: string
+        read_only:
+          type: boolean
+        status:
+          enum:
+          - active
+          - degraded
+          - unreachable
+          - unknown
+          type: string
+        tags:
+          items:
+            type: string
+          type: array
+          default: null
+    SchemaDesc:
+      properties:
+        alias:
+          type: string
+        backend:
+          type: string
+        introspected_at:
+          type: string
+        sampled:
+          type: boolean
+        tables:
+          items:
+            $ref: "#/components/schemas/SchemaDesc_tables_inner"
+          type: array
+          default: null
+    TableColumnMeta:
+      description: introspected column metadata used by the Table IDE data surface
+      properties:
+        name:
+          type: string
+        utype:
+          description: string|int|float|bool|date|datetime|json|array|mixed(…)
+          type: string
+        pk:
+          default: false
+          type: boolean
+        nullable:
+          default: false
+          type: boolean
+        default:
+          nullable: true
+          type: string
+        auto:
+          default: false
+          type: boolean
+      required:
+      - name
+      - utype
+    TableRows:
+      description: "one page of a table's rows, shaped for the dashboard datagrid"
+      properties:
+        columns:
+          items:
+            $ref: "#/components/schemas/TableColumnMeta"
+          type: array
+          default: null
+        rows:
+          items:
+            items: {}
+            type: array
+            default: null
+          type: array
+          default: null
+        key_columns:
+          description: primary-key columns; empty → existing rows are read-only (D54)
+          items:
+            type: string
+          type: array
+          default: null
+        editable:
+          type: boolean
+        limit:
+          type: integer
+        offset:
+          type: integer
+        has_more:
+          type: boolean
+        total:
+          description: present only when count=true was requested
+          nullable: true
+          type: integer
+        strategy:
+          type: string
+        duration_ms:
+          type: number
+    TableFilter:
+      properties:
+        column:
+          description: must match an introspected column (case-insensitive)
+          type: string
+        op:
+          enum:
+          - eq
+          - neq
+          - gt
+          - gte
+          - lt
+          - lte
+          - like
+          - contains
+          - starts_with
+          - in
+          - is_null
+          - not_null
+          type: string
+        value:
+          description: scalar (or array for `in`); rendered by the backend's literal
+            renderer — never raw SQL
+      required:
+      - column
+      - op
+    TableRowMutation:
+      properties:
+        inserted:
+          type: integer
+        updated:
+          type: integer
+        deleted:
+          type: integer
+        errors:
+          items:
+            $ref: "#/components/schemas/TableRowMutation_errors_inner"
+          type: array
+          default: null
+    QueryResult:
+      example:
+        query_id: query_id
+        columns:
+        - columns
+        - columns
+        rows:
+        - - ""
+          - ""
+        - - ""
+          - ""
+        row_count: 1
+        duration_ms: 5.962133916683182
+        strategy: pushdown-single
+        sub_queries:
+        - alias: alias
+          native_query: native_query
+        - alias: alias
+          native_query: native_query
+      properties:
+        query_id:
+          type: string
+        columns:
+          items:
+            type: string
+          type: array
+          default: null
+        rows:
+          items:
+            items: {}
+            type: array
+            default: null
+          type: array
+          default: null
+        row_count:
+          type: integer
+        duration_ms:
+          type: number
+        strategy:
+          enum:
+          - pushdown-single
+          - federated
+          type: string
+        sub_queries:
+          items:
+            $ref: "#/components/schemas/QueryResult_sub_queries_inner"
+          type: array
+          default: null
+    QueryFileNode:
+      description: query-file tree node (folders are nodes with children)
+      example:
+        id: id
+        name: name
+        parent_id: parent_id
+        updated_at: 2000-01-23T04:56:07.000+00:00
+        children:
+        - null
+        - null
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        parent_id:
+          type: string
+        updated_at:
+          format: date-time
+          type: string
+        children:
+          items:
+            $ref: "#/components/schemas/QueryFileNode"
+          type: array
+          default: null
+      required:
+      - children
+      - id
+      - name
+      - updated_at
+    QueryFile:
+      example:
+        id: id
+        name: name
+        parent_id: parent_id
+        content: content
+        updated_at: 2000-01-23T04:56:07.000+00:00
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        parent_id:
+          type: string
+        content:
+          description: present on single-file reads only
+          type: string
+        updated_at:
+          format: date-time
+          type: string
+      required:
+      - id
+      - name
+      - updated_at
+    BiTile:
+      description: declarative tile spec — viz type + SQL source + encoding (free-form;
+        structural contract enforced server-side)
+      example:
+        type: type
+        title: title
+        query: query
+        encoding: "{}"
+        layout: "{}"
+        refresh_ttl_secs: 0
+        drill:
+          query: query
+          param: param
+      properties:
+        type:
+          description: viz kind anchor — kpi | bar | line | pie (donut) | scatter
+            | heatmap | table
+          type: string
+        title:
+          type: string
+        query:
+          description: SQL source (federation allowed)
+          type: string
+        encoding:
+          description: |
+            renderer contract — bar/line/pie: {x: category column, y: numeric column, donut?: boolean}; scatter: {x, y, size?, group?} (numeric picks); heatmap: omitted (positional long-format triples: row label, column label, value); kpi: {label}; table ignores encoding (all optional, renderer falls back to positional column picks)
+          type: object
+        layout:
+          description: grid position/size (x
+          type: object
+        refresh_ttl_secs:
+          description: |
+            M3 per-tile result cache TTL (0 = always fresh). Cached tiles are served by the /data route and pre-warmed by the background loop.
+          type: integer
+        drill:
+          $ref: "#/components/schemas/BiTile_drill"
+      required:
+      - type
+    BiFilter:
+      description: |
+        M3 dashboard filter declaration. `param` names the `:param` token tile queries bind to; daterange filters bind `<param>_from` / `<param>_to` (ISO dates). Values live on the client; this is the authoring contract.
+      example:
+        id: id
+        param: param
+        kind: category
+        label: label
+        options:
+        - options
+        - options
+        default: default
+      properties:
+        id:
+          type: string
+        param:
+          description: identifier bound to tile :param tokens
+          type: string
+        kind:
+          enum:
+          - category
+          - daterange
+          type: string
+        label:
+          type: string
+        options:
+          description: category choices (declared by the author; cross-filter writes
+            these too)
+          items:
+            type: string
+          type: array
+          default: null
+        default:
+          description: category default (used by the background warmer)
+          type: string
+      required:
+      - id
+      - kind
+      - param
+    BiDashboard:
+      example:
+        id: id
+        name: name
+        tiles:
+        - type: type
+          title: title
+          query: query
+          encoding: "{}"
+          layout: "{}"
+          refresh_ttl_secs: 0
+          drill:
+            query: query
+            param: param
+        - type: type
+          title: title
+          query: query
+          encoding: "{}"
+          layout: "{}"
+          refresh_ttl_secs: 0
+          drill:
+            query: query
+            param: param
+        filters:
+        - id: id
+          param: param
+          kind: category
+          label: label
+          options:
+          - options
+          - options
+          default: default
+        - id: id
+          param: param
+          kind: category
+          label: label
+          options:
+          - options
+          - options
+          default: default
+        theme: river
+        updated_at: 2000-01-23T04:56:07.000+00:00
+        updated_by: updated_by
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        tiles:
+          description: present on single-dashboard reads only
+          items:
+            $ref: "#/components/schemas/BiTile"
+          type: array
+          default: null
+        filters:
+          description: present on single-dashboard reads only
+          items:
+            $ref: "#/components/schemas/BiFilter"
+          type: array
+          default: null
+        theme:
+          description: M5 named color palette for the dashboard's charts (default
+            river)
+          enum:
+          - river
+          - sunset
+          - forest
+          - berry
+          - mono
+          type: string
+        updated_at:
+          format: date-time
+          type: string
+        updated_by:
+          type: string
+      required:
+      - id
+      - name
+      - updated_at
+    TileData:
+      description: one tile's slice of the /data response
+      example:
+        index: 0
+        status: ok
+        cached: true
+        elapsed_ms: 6.027456183070403
+        params:
+        - params
+        - params
+        result:
+          query_id: query_id
+          columns:
+          - columns
+          - columns
+          rows:
+          - - ""
+            - ""
+          - - ""
+            - ""
+          row_count: 1
+          duration_ms: 5.962133916683182
+          strategy: pushdown-single
+          sub_queries:
+          - alias: alias
+            native_query: native_query
+          - alias: alias
+            native_query: native_query
+        error: error
+      properties:
+        index:
+          type: integer
+        status:
+          enum:
+          - ok
+          - error
+          - skipped
+          type: string
+        cached:
+          type: boolean
+        elapsed_ms:
+          type: number
+        params:
+          description: named params the tile binds (also present on bind errors)
+          items:
+            type: string
+          type: array
+          default: null
+        result:
+          $ref: "#/components/schemas/QueryResult"
+        error:
+          type: string
+      required:
+      - cached
+      - elapsed_ms
+      - index
+      - status
+    BiDashboardData:
+      example:
+        dashboard_id: dashboard_id
+        generated_at: 2000-01-23T04:56:07.000+00:00
+        tiles:
+        - index: 0
+          status: ok
+          cached: true
+          elapsed_ms: 6.027456183070403
+          params:
+          - params
+          - params
+          result:
+            query_id: query_id
+            columns:
+            - columns
+            - columns
+            rows:
+            - - ""
+              - ""
+            - - ""
+              - ""
+            row_count: 1
+            duration_ms: 5.962133916683182
+            strategy: pushdown-single
+            sub_queries:
+            - alias: alias
+              native_query: native_query
+            - alias: alias
+              native_query: native_query
+          error: error
+        - index: 0
+          status: ok
+          cached: true
+          elapsed_ms: 6.027456183070403
+          params:
+          - params
+          - params
+          result:
+            query_id: query_id
+            columns:
+            - columns
+            - columns
+            rows:
+            - - ""
+              - ""
+            - - ""
+              - ""
+            row_count: 1
+            duration_ms: 5.962133916683182
+            strategy: pushdown-single
+            sub_queries:
+            - alias: alias
+              native_query: native_query
+            - alias: alias
+              native_query: native_query
+          error: error
+        source: live
+        drill: ""
+      properties:
+        dashboard_id:
+          type: string
+        generated_at:
+          format: date-time
+          type: string
+        tiles:
+          items:
+            $ref: "#/components/schemas/TileData"
+          type: array
+          default: null
+        source:
+          description: |
+            M4 — "snapshot" responses replay stored results (generated_at is the capture time); "live" executed (or cache-served) tile SQL now.
+          enum:
+          - live
+          - snapshot
+          type: string
+        drill:
+          allOf:
+          - $ref: "#/components/schemas/TileData"
+          description: M5 — present when the request carried `drill`; the clicked
+            tile's drill query result (index = the requested tile)
+      required:
+      - dashboard_id
+      - generated_at
+      - tiles
+    DesignerModel:
+      description: ERD model; stable ids (tbl_/col_/idx_/rel_) drive rename-aware
+        diffs
+      properties:
+        format:
+          type: integer
+        tables:
+          items:
+            $ref: "#/components/schemas/DesignerModel_tables_inner"
+          type: array
+          default: null
+        relationships:
+          items:
+            $ref: "#/components/schemas/DesignerModel_relationships_inner"
+          type: array
+          default: null
+      required:
+      - relationships
+      - tables
+    DesignerMigration:
+      description: diff-derived migration for one publish (per-statement apply results)
+      properties:
+        id:
+          type: string
+        design_id:
+          type: string
+        from_version:
+          type: integer
+          nullable: true
+        to_version:
+          type: integer
+        target_alias:
+          type: string
+          nullable: true
+        target_schema:
+          type: string
+          nullable: true
+        status:
+          enum:
+          - pending
+          - applied
+          - failed
+          - partial
+          type: string
+        statements:
+          description: ordered DDL statements (id/op/sql/destructive/description)
+          items:
+            type: object
+          type: array
+          default: null
+        results:
+          description: "per-statement apply results ({id, ok, error, duration_ms})"
+          items:
+            type: object
+          type: array
+          default: null
+        applied_by:
+          type: string
+          nullable: true
+        applied_at:
+          type: string
+          nullable: true
+        duration_ms:
+          type: integer
+          nullable: true
+        error:
+          type: string
+          nullable: true
+      required:
+      - design_id
+      - id
+      - statements
+      - status
+      - to_version
+    WardenInstance:
+      properties:
+        fqdn:
+          example: acme-analytics-t4f9.databases.warden.ke
+          type: string
+        slug:
+          type: string
+        backend:
+          enum:
+          - postgres
+          - mysql
+          - mongodb
+          type: string
+        image:
+          example: postgres:17
+          type: string
+        container_id:
+          type: string
+        host_port:
+          type: integer
+        volume:
+          type: string
+        riverql_alias:
+          description: identifier-safe connection alias (hyphens → underscores)
+          type: string
+        created_by:
+          type: string
+        created_at:
+          format: date-time
+          type: string
+        status:
+          enum:
+          - provisioning
+          - active
+          - degraded
+          - stopped
+          - lost
+          - archived
+          - failed
+          type: string
+        last_error:
+          type: string
+        endpoint_fqdn:
+          type: string
+        endpoint_local:
+          type: string
+        password_ref:
+          description: secret reference — plaintext never leaves the SecretStore
+          type: string
+        riverql_health:
+          type: string
+        route_published:
+          type: boolean
+      required:
+      - backend
+      - created_at
+      - created_by
+      - fqdn
+      - host_port
+      - image
+      - riverql_alias
+      - slug
+      - status
+      - volume
+    ImportReport:
+      properties:
+        table:
+          type: string
+        created_table:
+          type: boolean
+        truncated:
+          type: boolean
+        rows_read:
+          type: integer
+        rows_inserted:
+          type: integer
+    RestoreSummary:
+      properties:
+        tables_restored:
+          type: integer
+        rows_inserted:
+          type: integer
+        tables_created:
+          items:
+            type: string
+          type: array
+          default: null
+    ArchiveEntry:
+      properties:
+        name:
+          type: string
+        size_bytes:
+          type: integer
+        created_at:
+          type: string
+    _connections_post_request:
+      properties:
+        alias:
+          type: string
+        backend_type:
+          type: string
+        host:
+          type: string
+        port:
+          type: integer
+        database:
+          type: string
+        username:
+          type: string
+        password:
+          type: string
+          writeOnly: true
+        read_only:
+          type: boolean
+      required:
+      - alias
+      - backend_type
+      - database
+    _query_post_request:
+      properties:
+        sql:
+          type: string
+        summarize:
+          type: boolean
+      required:
+      - sql
+    _query_explain_post_request:
+      properties:
+        sql:
+          type: string
+        ai:
+          type: boolean
+    _tables__alias__rows_query_post_request_sort_inner:
+      properties:
+        column:
+          type: string
+        dir:
+          default: asc
+          enum:
+          - asc
+          - desc
+          type: string
+      required:
+      - column
+    _tables__alias__rows_query_post_request:
+      properties:
+        table:
+          type: string
+        database:
+          description: native database when the alias is a server
+          type: string
+        schema:
+          description: native namespace (postgres schema)
+          type: string
+        columns:
+          description: projection; PK columns are always included
+          items:
+            type: string
+          type: array
+          default: null
+        filters:
+          items:
+            $ref: "#/components/schemas/TableFilter"
+          type: array
+          default: null
+        sort:
+          items:
+            $ref: "#/components/schemas/_tables__alias__rows_query_post_request_sort_inner"
+          type: array
+          default: null
+        limit:
+          default: 1000
+          description: clamped to 1..max_rows_per_query (limit+1 probes has_more)
+          type: integer
+        offset:
+          default: 0
+          type: integer
+        count:
+          default: false
+          description: opt-in SELECT COUNT(*) — expensive predicates should stay explicit
+          type: boolean
+      required:
+      - table
+    _tables__alias__rows_post_request:
+      properties:
+        table:
+          type: string
+        database:
+          type: string
+        schema:
+          type: string
+        rows:
+          items:
+            additionalProperties: true
+            type: object
+          type: array
+          default: null
+      required:
+      - rows
+      - table
+    _tables__alias__rows_patch_request_updates_inner:
+      properties:
+        key:
+          additionalProperties:
+            nullable: true
+          description: every PK column must be present; non-PK keys are rejected
+          type: object
+        changes:
+          additionalProperties:
+            nullable: true
+          type: object
+      required:
+      - changes
+      - key
+    _tables__alias__rows_patch_request:
+      properties:
+        table:
+          type: string
+        database:
+          type: string
+        schema:
+          type: string
+        updates:
+          items:
+            $ref: "#/components/schemas/_tables__alias__rows_patch_request_updates_inner"
+          type: array
+          default: null
+      required:
+      - table
+      - updates
+    _tables__alias__rows_delete_post_request:
+      properties:
+        table:
+          type: string
+        database:
+          type: string
+        schema:
+          type: string
+        keys:
+          items:
+            additionalProperties: true
+            type: object
+          type: array
+          default: null
+      required:
+      - keys
+      - table
+    _tables__alias__truncate_post_request:
+      properties:
+        table:
+          type: string
+        database:
+          type: string
+        schema:
+          type: string
+        confirm:
+          description: must equal `table` (server-side defense in depth)
+          type: string
+      required:
+      - confirm
+      - table
+    _tables__alias__drop_post_request:
+      properties:
+        table:
+          type: string
+        database:
+          type: string
+        schema:
+          type: string
+        confirm:
+          description: must equal `table`
+          type: string
+        if_exists:
+          default: false
+          type: boolean
+        cascade:
+          default: false
+          description: not supported — fails loud rather than silently skipping dependents
+          type: boolean
+      required:
+      - confirm
+      - table
+    _query_stream_post_request:
+      properties:
+        sql:
+          type: string
+      required:
+      - sql
+    _files_get_200_response:
+      example:
+        files:
+        - id: id
+          name: name
+          parent_id: parent_id
+          updated_at: 2000-01-23T04:56:07.000+00:00
+          children:
+          - null
+          - null
+        - id: id
+          name: name
+          parent_id: parent_id
+          updated_at: 2000-01-23T04:56:07.000+00:00
+          children:
+          - null
+          - null
+      properties:
+        files:
+          items:
+            $ref: "#/components/schemas/QueryFileNode"
+          type: array
+          default: null
+    _files_post_request:
+      properties:
+        name:
+          type: string
+        parent:
+          description: parent node id
+          type: string
+      required:
+      - name
+    _files_post_201_response:
+      example:
+        file:
+          id: id
+          name: name
+          parent_id: parent_id
+          content: content
+          updated_at: 2000-01-23T04:56:07.000+00:00
+      properties:
+        file:
+          $ref: "#/components/schemas/QueryFile"
+    _files__id__put_request:
+      properties:
+        name:
+          type: string
+        content:
+          type: string
+    _files__id__delete_200_response:
+      example:
+        removed: removed
+        deleted_count: 0
+      properties:
+        removed:
+          type: string
+        deleted_count:
+          type: integer
+    _bi_dashboards_get_200_response:
+      example:
+        dashboards:
+        - id: id
+          name: name
+          tiles:
+          - type: type
+            title: title
+            query: query
+            encoding: "{}"
+            layout: "{}"
+            refresh_ttl_secs: 0
+            drill:
+              query: query
+              param: param
+          - type: type
+            title: title
+            query: query
+            encoding: "{}"
+            layout: "{}"
+            refresh_ttl_secs: 0
+            drill:
+              query: query
+              param: param
+          filters:
+          - id: id
+            param: param
+            kind: category
+            label: label
+            options:
+            - options
+            - options
+            default: default
+          - id: id
+            param: param
+            kind: category
+            label: label
+            options:
+            - options
+            - options
+            default: default
+          theme: river
+          updated_at: 2000-01-23T04:56:07.000+00:00
+          updated_by: updated_by
+        - id: id
+          name: name
+          tiles:
+          - type: type
+            title: title
+            query: query
+            encoding: "{}"
+            layout: "{}"
+            refresh_ttl_secs: 0
+            drill:
+              query: query
+              param: param
+          - type: type
+            title: title
+            query: query
+            encoding: "{}"
+            layout: "{}"
+            refresh_ttl_secs: 0
+            drill:
+              query: query
+              param: param
+          filters:
+          - id: id
+            param: param
+            kind: category
+            label: label
+            options:
+            - options
+            - options
+            default: default
+          - id: id
+            param: param
+            kind: category
+            label: label
+            options:
+            - options
+            - options
+            default: default
+          theme: river
+          updated_at: 2000-01-23T04:56:07.000+00:00
+          updated_by: updated_by
+      properties:
+        dashboards:
+          items:
+            $ref: "#/components/schemas/BiDashboard"
+          type: array
+          default: null
+    _bi_dashboards_post_request:
+      properties:
+        name:
+          type: string
+        tiles:
+          items:
+            $ref: "#/components/schemas/BiTile"
+          type: array
+          default: null
+      required:
+      - name
+    _bi_dashboards_post_201_response:
+      example:
+        dashboard:
+          id: id
+          name: name
+          tiles:
+          - type: type
+            title: title
+            query: query
+            encoding: "{}"
+            layout: "{}"
+            refresh_ttl_secs: 0
+            drill:
+              query: query
+              param: param
+          - type: type
+            title: title
+            query: query
+            encoding: "{}"
+            layout: "{}"
+            refresh_ttl_secs: 0
+            drill:
+              query: query
+              param: param
+          filters:
+          - id: id
+            param: param
+            kind: category
+            label: label
+            options:
+            - options
+            - options
+            default: default
+          - id: id
+            param: param
+            kind: category
+            label: label
+            options:
+            - options
+            - options
+            default: default
+          theme: river
+          updated_at: 2000-01-23T04:56:07.000+00:00
+          updated_by: updated_by
+      properties:
+        dashboard:
+          $ref: "#/components/schemas/BiDashboard"
+    _bi_dashboards__id__put_request:
+      example:
+        name: name
+        tiles:
+        - type: type
+          title: title
+          query: query
+          encoding: "{}"
+          layout: "{}"
+          refresh_ttl_secs: 0
+          drill:
+            query: query
+            param: param
+        - type: type
+          title: title
+          query: query
+          encoding: "{}"
+          layout: "{}"
+          refresh_ttl_secs: 0
+          drill:
+            query: query
+            param: param
+        filters:
+        - id: id
+          param: param
+          kind: category
+          label: label
+          options:
+          - options
+          - options
+          default: default
+        - id: id
+          param: param
+          kind: category
+          label: label
+          options:
+          - options
+          - options
+          default: default
+      properties:
+        name:
+          type: string
+        tiles:
+          items:
+            $ref: "#/components/schemas/BiTile"
+          type: array
+          default: null
+        filters:
+          items:
+            $ref: "#/components/schemas/BiFilter"
+          type: array
+          default: null
+    _bi_dashboards__id__delete_200_response:
+      example:
+        removed: removed
+      properties:
+        removed:
+          type: string
+    _bi_dashboards__id__data_post_request_drill:
+      description: |
+        M5 drill-down — run the tile's stored drill query LIVE (in both modes) with the clicked value bound to its `:param`, plus the usual filter values.
+      properties:
+        tile:
+          description: index into the dashboard's tiles array
+          type: integer
+        value:
+          description: the clicked category value (≤ 256 chars)
+          type: string
+      required:
+      - tile
+      - value
+    _bi_dashboards__id__data_post_request:
+      properties:
+        values:
+          additionalProperties:
+            type: string
+          description: "filter values by param name (category strings, ISO dates)"
+          type: object
+        force:
+          description: bypass the TTL cache (manual refresh)
+          type: boolean
+        mode:
+          description: |
+            M4 — "snapshot" replays the stored dashboard snapshot without executing anything (404-shaped plan error when none exists yet); default "live".
+          enum:
+          - live
+          - snapshot
+          type: string
+        drill:
+          $ref: "#/components/schemas/_bi_dashboards__id__data_post_request_drill"
+    _bi_dashboards__id__embed_post_200_response:
+      example:
+        token: token
+        path: path
+      properties:
+        token:
+          type: string
+        path:
+          description: embed page path
+          type: string
+    _bi_dashboards__id__embed_delete_200_response:
+      example:
+        revoked: revoked
+      properties:
+        revoked:
+          type: string
+    _bi_embed__token__get_200_response:
+      example:
+        dashboard:
+          name: name
+          tiles:
+          - type: type
+            title: title
+            query: query
+            encoding: "{}"
+            layout: "{}"
+            refresh_ttl_secs: 0
+            drill:
+              query: query
+              param: param
+          - type: type
+            title: title
+            query: query
+            encoding: "{}"
+            layout: "{}"
+            refresh_ttl_secs: 0
+            drill:
+              query: query
+              param: param
+          filters:
+          - id: id
+            param: param
+            kind: category
+            label: label
+            options:
+            - options
+            - options
+            default: default
+          - id: id
+            param: param
+            kind: category
+            label: label
+            options:
+            - options
+            - options
+            default: default
+      properties:
+        dashboard:
+          $ref: "#/components/schemas/_bi_dashboards__id__put_request"
+    _bi_embed__token__data_post_request:
+      properties:
+        values:
+          additionalProperties:
+            type: string
+          description: "filter values by param name (≤ 20 entries, ≤ 256 chars each)"
+          type: object
+        force:
+          type: boolean
+        mode:
+          enum:
+          - live
+          - snapshot
+          type: string
+    _bi_dashboards__id__snapshot_get_200_response_snapshot:
+      example:
+        created_at: created_at
+        created_by: created_by
+        tiles:
+        - index: 0
+          status: ok
+          cached: true
+          elapsed_ms: 6.027456183070403
+          params:
+          - params
+          - params
+          result:
+            query_id: query_id
+            columns:
+            - columns
+            - columns
+            rows:
+            - - ""
+              - ""
+            - - ""
+              - ""
+            row_count: 1
+            duration_ms: 5.962133916683182
+            strategy: pushdown-single
+            sub_queries:
+            - alias: alias
+              native_query: native_query
+            - alias: alias
+              native_query: native_query
+          error: error
+        - index: 0
+          status: ok
+          cached: true
+          elapsed_ms: 6.027456183070403
+          params:
+          - params
+          - params
+          result:
+            query_id: query_id
+            columns:
+            - columns
+            - columns
+            rows:
+            - - ""
+              - ""
+            - - ""
+              - ""
+            row_count: 1
+            duration_ms: 5.962133916683182
+            strategy: pushdown-single
+            sub_queries:
+            - alias: alias
+              native_query: native_query
+            - alias: alias
+              native_query: native_query
+          error: error
+      properties:
+        created_at:
+          type: string
+        created_by:
+          type: string
+          nullable: true
+        tiles:
+          items:
+            $ref: "#/components/schemas/TileData"
+          type: array
+          default: null
+      nullable: true
+    _bi_dashboards__id__snapshot_get_200_response:
+      example:
+        snapshot:
+          created_at: created_at
+          created_by: created_by
+          tiles:
+          - index: 0
+            status: ok
+            cached: true
+            elapsed_ms: 6.027456183070403
+            params:
+            - params
+            - params
+            result:
+              query_id: query_id
+              columns:
+              - columns
+              - columns
+              rows:
+              - - ""
+                - ""
+              - - ""
+                - ""
+              row_count: 1
+              duration_ms: 5.962133916683182
+              strategy: pushdown-single
+              sub_queries:
+              - alias: alias
+                native_query: native_query
+              - alias: alias
+                native_query: native_query
+            error: error
+          - index: 0
+            status: ok
+            cached: true
+            elapsed_ms: 6.027456183070403
+            params:
+            - params
+            - params
+            result:
+              query_id: query_id
+              columns:
+              - columns
+              - columns
+              rows:
+              - - ""
+                - ""
+              - - ""
+                - ""
+              row_count: 1
+              duration_ms: 5.962133916683182
+              strategy: pushdown-single
+              sub_queries:
+              - alias: alias
+                native_query: native_query
+              - alias: alias
+                native_query: native_query
+            error: error
+      properties:
+        snapshot:
+          $ref: "#/components/schemas/_bi_dashboards__id__snapshot_get_200_response_snapshot"
+    _bi_dashboards__id__snapshot_post_200_response:
+      example:
+        created_at: created_at
+        tiles: 0
+        errors: 6
+      properties:
+        created_at:
+          type: string
+        tiles:
+          description: number of tile entries stored
+          type: integer
+        errors:
+          type: integer
+    _bi_tile_preview_post_request:
+      properties:
+        query:
+          description: SQL SELECT (federation allowed)
+          type: string
+        values:
+          additionalProperties:
+            type: string
+          description: "named-param values (e.g. {\"status\":\"shipped\",\"created_from\"\
+            :\"2026-01-01\"})"
+          type: object
+      required:
+      - query
+    _ai_nl_to_sql_post_request:
+      properties:
+        prompt:
+          type: string
+        context_aliases:
+          items:
+            type: string
+          type: array
+          default: null
+      required:
+      - prompt
+    _ai_conversations_post_request_messages_inner:
+      properties:
+        role:
+          enum:
+          - user
+          - assistant
+          type: string
+        content:
+          type: string
+        sql:
+          type: string
+          nullable: true
+        actions:
+          items:
+            type: object
+          type: array
+          default: null
+        continuation:
+          type: boolean
+    _ai_conversations_post_request:
+      properties:
+        title:
+          type: string
+        messages:
+          items:
+            $ref: "#/components/schemas/_ai_conversations_post_request_messages_inner"
+          type: array
+          default: null
+    _ai_conversations__id__put_request:
+      properties:
+        title:
+          type: string
+        messages:
+          items:
+            type: object
+          type: array
+          default: null
+    _ai_lily_post_request_messages_inner:
+      properties:
+        role:
+          type: string
+        content:
+          type: string
+    _ai_lily_post_request:
+      properties:
+        messages:
+          items:
+            $ref: "#/components/schemas/_ai_lily_post_request_messages_inner"
+          type: array
+          default: null
+        current_sql:
+          type: string
+        context_aliases:
+          items:
+            type: string
+          type: array
+          default: null
+        surface:
+          description: |
+            Opaque view context from the dashboard shell (view name + open item ids) so Lily can act on the current surface.
+          type: object
+      required:
+      - messages
+    _ai_lily_post_200_response:
+      example:
+        reply: reply
+        sql: sql
+        actions:
+        - ""
+        - ""
+      properties:
+        reply:
+          type: string
+        sql:
+          type: string
+          nullable: true
+        actions:
+          description: |
+            Validated action objects — open/insert_sql/run_sql/ create_query_file/create_notebook/add_notebook_cell/ create_design/add_design_tables/update_design_table/ delete_design_table/update_design_indexes/ update_design_relationship/delete_design_relationship/ set_design_target/rename_design/delete_design/ restore_design_version/publish_design/apply_migration/ create_dashboard/add_dashboard_tile/update_dashboard_tile/ delete_dashboard_tile/set_dashboard_filters/ create_embed_link/create_bucket/create_fs_folder/ delete_fs_node/provision_database/attach_database/ restart_database/destroy_database/connect_database — applied by the client only after user confirmation.
+          items: {}
+          type: array
+          default: null
+    _ai_bi_tile_post_request:
+      properties:
+        prompt:
+          description: what the tile should show
+          type: string
+        context_aliases:
+          items:
+            type: string
+          type: array
+          default: null
+      required:
+      - prompt
+    _ai_bi_tile_post_200_response:
+      example:
+        tile:
+          type: type
+          title: title
+          query: query
+          encoding: "{}"
+          layout: "{}"
+          refresh_ttl_secs: 0
+          drill:
+            query: query
+            param: param
+        valid: true
+        error: error
+        raw: raw
+      properties:
+        tile:
+          $ref: "#/components/schemas/BiTile"
+        valid:
+          type: boolean
+        error:
+          type: string
+        raw:
+          description: raw model reply
+          type: string
+    _ai_summarize_post_request:
+      properties:
+        columns:
+          items:
+            type: string
+          type: array
+          default: null
+        rows:
+          items:
+            items: {}
+            type: array
+            default: null
+          type: array
+          default: null
+        total_row_count:
+          type: integer
+    _databases_post_request:
+      properties:
+        name:
+          type: string
+        backend:
+          enum:
+          - postgres
+          - mysql
+          - mongodb
+          type: string
+        initial_db:
+          default: appdb
+          type: string
+      required:
+      - backend
+      - name
+    _auth_register_post_request:
+      properties:
+        org_name:
+          type: string
+        email:
+          type: string
+        password:
+          minLength: 10
+          type: string
+          writeOnly: true
+      required:
+      - email
+      - org_name
+      - password
+    _auth_permissions_get_200_response_catalog_inner:
+      example:
+        permission: permission
+        description: description
+      properties:
+        permission:
+          type: string
+        description:
+          type: string
+    _auth_permissions_get_200_response:
+      example:
+        role: role
+        permissions:
+        - permissions
+        - permissions
+        catalog:
+        - permission: permission
+          description: description
+        - permission: permission
+          description: description
+      properties:
+        role:
+          type: string
+        permissions:
+          items:
+            type: string
+          type: array
+          default: null
+        catalog:
+          items:
+            $ref: "#/components/schemas/_auth_permissions_get_200_response_catalog_inner"
+          type: array
+          default: null
+    _auth_users_post_request:
+      properties:
+        role:
+          enum:
+          - analyst
+          - developer
+          - admin
+          type: string
+        permissions:
+          description: custom grants beyond the role bundle
+          items:
+            type: string
+          type: array
+          default: null
+      required:
+      - email
+      - password
+      - role
+    _auth_users__id__patch_request:
+      properties:
+        role:
+          enum:
+          - analyst
+          - developer
+          - admin
+          - owner
+          type: string
+        permissions:
+          description: full replacement list
+          items:
+            type: string
+          type: array
+          default: null
+    _auth_org_patch_request:
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+    _auth_api_keys_post_request:
+      properties:
+        name:
+          type: string
+        role:
+          enum:
+          - analyst
+          - developer
+          - admin
+          - owner
+          type: string
+        permissions:
+          description: custom grants beyond the role bundle
+          items:
+            type: string
+          type: array
+          default: null
+      required:
+      - name
+    _query_script_post_request:
+      properties:
+        script:
+          description: |
+            Multi-statement SQL separated by ';'. The REST surface is AUTOCOMMIT — BEGIN/COMMIT/ROLLBACK are rejected (use the CLI exec --script / exec-file for transactions).
+          type: string
+      required:
+      - script
+    _tools__alias__export_post_request:
+      properties:
+        table:
+          type: string
+        format:
+          default: json
+          enum:
+          - json
+          - ndjson
+          - csv
+          type: string
+        database:
+          description: native database when the alias is a server
+          type: string
+        schema:
+          description: native namespace the table lives in (postgres)
+          type: string
+      required:
+      - table
+    _tools__alias__import_post_request:
+      properties:
+        table:
+          type: string
+        format:
+          default: json
+          enum:
+          - json
+          - ndjson
+          - csv
+          type: string
+        data:
+          description: payload ≤ 64 MiB
+          type: string
+        truncate:
+          default: false
+          type: boolean
+        create_if_missing:
+          default: true
+          type: boolean
+        database:
+          description: native database when the alias is a server
+          type: string
+        schema:
+          description: native namespace to import into (postgres)
+          type: string
+      required:
+      - data
+      - table
+    _tools__alias__restore_post_request:
+      properties:
+        artifact:
+          description: filename under .riverql/archives/
+          type: string
+        data:
+          description: payload ≤ 512 MiB (backup JSON
+          type: string
+        create_missing_tables:
+          default: true
+          type: boolean
+    _servers__alias__databases_post_request:
+      properties:
+        database:
+          type: string
+      required:
+      - database
+    _servers__alias__users_post_request:
+      properties:
+        username:
+          type: string
+        password:
+          type: string
+        database:
+          type: string
+        privilege:
+          enum:
+          - readonly
+          - readwrite
+          type: string
+        tables:
+          items:
+            type: string
+          type: array
+          default: null
+      required:
+      - password
+      - username
+    _servers__alias__access_allowlist_put_request:
+      properties:
+        cidrs:
+          example:
+          - 10.0.0.0/24
+          items:
+            type: string
+          type: array
+          default: null
+      required:
+      - cidrs
+    _notebooks_post_request:
+      properties:
+        name:
+          type: string
+        parent:
+          description: parent folder id
+          type: string
+      required:
+      - name
+    _notebooks__id__put_request:
+      properties:
+        name:
+          type: string
+        content:
+          description: nbformat JSON as a string
+          type: string
+    _notebooks__id__execute_post_request:
+      properties:
+        cell_id:
+          type: string
+        code:
+          description: override the stored cell source
+          type: string
+      required:
+      - cell_id
+    _notebooks__id__execute_stream_post_request:
+      properties:
+        cell_id:
+          type: string
+        code:
+          type: string
+      required:
+      - cell_id
+    _notebooks__id__complete_post_request:
+      properties:
+        code:
+          type: string
+        cursor_pos:
+          type: integer
+      required:
+      - code
+      - cursor_pos
+    _jobs_post_request:
+      properties:
+        name:
+          type: string
+        task_type:
+          description: sql | notebook
+          type: string
+        description:
+          type: string
+        schedule:
+          description: cron expression
+          type: string
+        sql:
+          type: string
+        connection_alias:
+          description: required for sql tasks
+          type: string
+        notebook_id:
+          description: required for notebook tasks
+          type: string
+      required:
+      - name
+      - task_type
+    _jobs__id__put_request:
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        schedule:
+          type: string
+        sql:
+          type: string
+        connection_alias:
+          type: string
+        notebook_id:
+          type: string
+    _containers_post_request:
+      properties:
+        name:
+          type: string
+        image:
+          description: e.g. nginx:latest or registry.containers.river.li/org/app:tag
+          type: string
+        source:
+          description: registry | external
+          type: string
+        env_vars:
+          additionalProperties:
+            type: string
+          type: object
+        pull_secret_ref:
+          type: string
+      required:
+      - image
+      - name
+      - source
+    _containers_registry_info_get_200_response:
+      example:
+        endpoint: endpoint
+        username: username
+        token: token
+      properties:
+        endpoint:
+          type: string
+        username:
+          type: string
+        token:
+          type: string
+    _containers__id__put_request:
+      properties:
+        name:
+          type: string
+        image:
+          type: string
+        env_vars:
+          additionalProperties:
+            type: string
+          type: object
+    _filestore_buckets_post_request:
+      properties:
+        name:
+          type: string
+      required:
+      - name
+    _filestore_buckets__id__patch_request:
+      properties:
+        site_enabled:
+          type: boolean
+        site_index:
+          type: string
+        site_spa:
+          type: boolean
+    _filestore_buckets__id__nodes_post_request:
+      properties:
+        name:
+          type: string
+        parent:
+          type: string
+      required:
+      - name
+    _filestore_nodes__id__patch_request:
+      properties:
+        visibility:
+          enum:
+          - private
+          - public
+          type: string
+        site_enabled:
+          type: boolean
+        site_index:
+          type: string
+        site_spa:
+          type: boolean
+    _filestore_nodes__id__copy_post_request:
+      properties:
+        target_bucket:
+          type: string
+        target_parent:
+          type: string
+      required:
+      - target_bucket
+    _designer_designs_post_request:
+      properties:
+        name:
+          type: string
+        target_alias:
+          description: connection the migration will apply to
+          type: string
+        target_schema:
+          description: postgres namespace the migration applies into
+          type: string
+      required:
+      - name
+    _designer_designs__id__put_request:
+      properties:
+        name:
+          type: string
+        target_alias:
+          description: empty string clears the target
+          type: string
+        target_schema:
+          description: postgres namespace; empty string clears it
+          type: string
+        model:
+          $ref: "#/components/schemas/DesignerModel"
+    _designer_designs__id__preview_post_request:
+      properties:
+        dialect:
+          enum:
+          - postgres
+          - mysql
+          - sqlite
+          type: string
+    _designer_designs__id__publish_post_request:
+      properties:
+        notes:
+          type: string
+        confirm_destructive:
+          default: false
+          type: boolean
+        dialect:
+          enum:
+          - postgres
+          - mysql
+          - sqlite
+          type: string
+    ErrorEnvelope_error:
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        backend:
+          type: string
+        sub_query:
+          type: string
+    SchemaDesc_tables_inner_columns_inner:
+      properties:
+        name:
+          type: string
+        utype:
+          type: string
+        pk:
+          default: false
+          description: part of the primary key — row identity for inline editing (D54)
+          type: boolean
+        nullable:
+          default: false
+          type: boolean
+        default:
+          description: native default expression when introspectable
+          nullable: true
+          type: string
+        auto:
+          default: false
+          description: identity / auto_increment / rowid — omitted from generated
+            INSERTs
+          type: boolean
+    SchemaDesc_tables_inner:
+      properties:
+        name:
+          type: string
+        inconsistent:
+          items:
+            type: string
+          type: array
+          default: null
+        columns:
+          items:
+            $ref: "#/components/schemas/SchemaDesc_tables_inner_columns_inner"
+          type: array
+          default: null
+    TableRowMutation_errors_inner:
+      properties:
+        index:
+          type: integer
+        code:
+          description: row_conflict | read_only | invalid_request | forbidden | not_found
+          type: string
+        message:
+          type: string
+    QueryResult_sub_queries_inner:
+      example:
+        alias: alias
+        native_query: native_query
+      properties:
+        alias:
+          type: string
+        native_query:
+          type: string
+    BiTile_drill:
+      description: |
+        M5 drill-down spec — a stored SELECT executed live on tile click via the /data route's `drill` request. The clicked value binds to `param` (default "drill_value"); filter values bind as usual. SELECT-only, enforced at save time.
+      example:
+        query: query
+        param: param
+      properties:
+        query:
+          description: drill SELECT (validated at save time)
+          type: string
+        param:
+          description: identifier the clicked value binds to (default drill_value)
+          type: string
+    DesignerModel_tables_inner_columns_inner:
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        type:
+          type: string
+        pk:
+          type: boolean
+        nullable:
+          type: boolean
+        unique:
+          type: boolean
+        default:
+          type: string
+        note:
+          type: string
+      required:
+      - id
+      - name
+      - type
+    DesignerModel_tables_inner_indexes_inner:
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        columns:
+          items:
+            type: string
+          type: array
+          default: null
+        unique:
+          type: boolean
+      required:
+      - columns
+      - id
+      - name
+    DesignerModel_tables_inner:
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        schema:
+          type: string
+        note:
+          type: string
+        x:
+          type: number
+        "y":
+          type: number
+        columns:
+          items:
+            $ref: "#/components/schemas/DesignerModel_tables_inner_columns_inner"
+          type: array
+          default: null
+        indexes:
+          items:
+            $ref: "#/components/schemas/DesignerModel_tables_inner_indexes_inner"
+          type: array
+          default: null
+      required:
+      - columns
+      - id
+      - name
+    DesignerModel_relationships_inner:
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        fromTable:
+          type: string
+        fromColumns:
+          items:
+            type: string
+          type: array
+          default: null
+        toTable:
+          type: string
+        toColumns:
+          items:
+            type: string
+          type: array
+          default: null
+        onDelete:
+          enum:
+          - restrict
+          - cascade
+          - set_null
+          - set_default
+          - no_action
+          type: string
+        onUpdate:
+          enum:
+          - restrict
+          - cascade
+          - set_null
+          - set_default
+          - no_action
+          type: string
+      required:
+      - fromColumns
+      - fromTable
+      - id
+      - name
+      - toColumns
+      - toTable
+  securitySchemes:
+    bearerAuth:
+      bearerFormat: JWT
+      scheme: bearer
+      type: http
+    ApiKeyAuth:
+      in: header
+      name: x-api-key
+      type: apiKey
