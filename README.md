@@ -10,7 +10,7 @@ Official client libraries for the [River](https://river.li) API — cross-databa
 | **Go** | [`go/`](./go) | `go get github.com/brian-bill/river-sdks/go` |
 | **Rust** | [`rust/`](./rust) | `river-rust = { git = "https://github.com/brian-bill/river-sdks", subdirectory = "rust" }` |
 | **PHP** | [`php/`](./php) | `composer require brian-bill/river-php` |
-| **Kotlin** | [`kotlin/`](./kotlin) | `implementation("dev.river:river-kotlin:0.9.0")` |
+| **Kotlin** | [`kotlin/`](./kotlin) | `implementation("dev.river:river-kotlin:0.10.0")` |
 | **Dart** | [`dart/`](./dart) | See [`dart/pubspec.yaml`](./dart/pubspec.yaml) |
 | **C#** | [`csharp/`](./csharp) | `dotnet add package River` |
 

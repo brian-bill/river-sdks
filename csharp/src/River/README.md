@@ -108,7 +108,7 @@ namespace YourProject
 
 ## Api Information
 - appName: River REST API
-- appVersion: 0.9.0
+- appVersion: 0.10.0
 - appDescription: Cross-database SQL federation engine: River federation, Warden instance orchestration, query files, notebooks, the filestore (bucket volumes mounted at /home/river/rfs inside notebook runtimes) and the Lily AI. Source of truth for route shapes is &#x60;src/api.rs&#x60; — this spec tracks it, schemas are indicative. Auth: a &#x60;Bearer &lt;jwt&gt;&#x60; from /auth/register|login|refresh, an &#x60;x-api-key&#x60; &#x60;rqk_…&#x60; key issued post-login, or an operator-configured static key (bootstrap org). Public (no auth): &#x60;/v1/health&#x60;, &#x60;/&#x60;, &#x60;/v1/ai/status&#x60;, &#x60;/v1/auth/login|register|refresh&#x60;. Everything else is 401 fail-closed and RBAC-gated (&#x60;module:resource:action&#x60; permissions per org role). 
 
 ## Build
